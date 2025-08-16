@@ -1,7 +1,87 @@
 /**
  * Food Ordering App JavaScript
  * This file handles all the functionality of the food ordering application
+ * Security-enhanced version with input validation and sanitization
  */
+
+// Security utilities
+const SecurityUtils = {
+    // HTML sanitization to prevent XSS attacks
+    sanitizeHTML: function(str) {
+        if (typeof str !== 'string') return '';
+        const temp = document.createElement('div');
+        temp.textContent = str;
+        return temp.innerHTML;
+    },
+    
+    // Input validation patterns
+    patterns: {
+        name: /^[a-zA-Z\s\u00C0-\u017F]{2,50}$/,
+        phone: /^(\+62|62|0)[0-9]{8,13}$/,
+        quantity: /^[1-9][0-9]{0,2}$/,
+        id: /^[1-9][0-9]*$/
+    },
+    
+    // Validate input against pattern
+    validateInput: function(input, type) {
+        if (!input || typeof input !== 'string') return false;
+        const pattern = this.patterns[type];
+        return pattern ? pattern.test(input.trim()) : false;
+    },
+    
+    // Sanitize and validate text input
+    sanitizeAndValidate: function(input, type, maxLength = 1000) {
+        if (!input) return { isValid: false, value: '', error: 'Input is required' };
+        
+        const sanitized = this.sanitizeHTML(input.toString().trim());
+        
+        if (sanitized.length === 0) {
+            return { isValid: false, value: '', error: 'Input cannot be empty' };
+        }
+        
+        if (sanitized.length > maxLength) {
+            return { isValid: false, value: '', error: `Input too long (max ${maxLength} characters)` };
+        }
+        
+        if (type && !this.validateInput(sanitized, type)) {
+            return { isValid: false, value: '', error: `Invalid ${type} format` };
+        }
+        
+        return { isValid: true, value: sanitized, error: null };
+    },
+    
+    // Validate numeric input
+    validateNumber: function(input, min = 0, max = Number.MAX_SAFE_INTEGER) {
+        const num = parseInt(input);
+        if (isNaN(num) || num < min || num > max) {
+            return { isValid: false, value: 0, error: `Number must be between ${min} and ${max}` };
+        }
+        return { isValid: true, value: num, error: null };
+    },
+    
+    // Rate limiting for form submissions
+    rateLimiter: {
+        attempts: new Map(),
+        maxAttempts: 5,
+        windowMs: 60000, // 1 minute
+        
+        isAllowed: function(key) {
+            const now = Date.now();
+            const attempts = this.attempts.get(key) || [];
+            
+            // Remove old attempts outside the window
+            const validAttempts = attempts.filter(time => now - time < this.windowMs);
+            
+            if (validAttempts.length >= this.maxAttempts) {
+                return false;
+            }
+            
+            validAttempts.push(now);
+            this.attempts.set(key, validAttempts);
+            return true;
+        }
+    }
+};
 
 // Product data organized by categories (in a real app, this would come from a backend API)
 const productCategories = {
@@ -99,7 +179,8 @@ const productCategories = {
             name: "Es Krim Goreng",
             price: 25000,
             description: "Fried ice cream with crispy coating, served warm outside and cold inside.",
-            image: "https://placehold.co/600x400/E91E63/ffffff?text=Es+Krim+Goreng"
+            image: "https://placehold.co/600x400/E91E63/ffffff?text=Es+Krim+Goreng",
+            isNew: true
         },
         {
             id: 14,
@@ -230,18 +311,61 @@ function renderProducts() {
         productsRow.className = 'row';
         
         categoryProducts.forEach(product => {
+            // Validate product data
+            if (!product || typeof product.id !== 'number' || !product.name || !product.price) {
+                console.warn('Invalid product data:', product);
+                return;
+            }
+            
             const productCol = document.createElement('div');
             productCol.className = 'col-lg-4 col-md-6 mb-4';
             
-            productCol.innerHTML = `
-                <div class="product-card" data-id="${product.id}">
-                    <img src="${product.image}" alt="${product.name}" class="product-image">
-                    <h4 class="product-title">${product.name}</h4>
-                    <p class="product-price">${formatPrice(product.price)}</p>
-                    <button class="btn btn-primary view-details">View Details</button>
-                </div>
-            `;
+            // Create secure product card
+            const productCard = document.createElement('div');
+            productCard.className = 'product-card';
+            productCard.setAttribute('data-id', product.id.toString());
             
+            // Image container
+            const imageContainer = document.createElement('div');
+            imageContainer.className = 'position-relative';
+            
+            const img = document.createElement('img');
+            img.src = SecurityUtils.sanitizeHTML(product.image || '');
+            img.alt = SecurityUtils.sanitizeHTML(product.name);
+            img.className = 'product-image';
+            img.onerror = function() { this.src = 'https://placehold.co/600x400/cccccc/ffffff?text=No+Image'; };
+            imageContainer.appendChild(img);
+            
+            // New badge if applicable
+            if (product.isNew) {
+                const badge = document.createElement('span');
+                badge.className = 'badge bg-success new-badge position-absolute';
+                badge.textContent = 'New';
+                imageContainer.appendChild(badge);
+            }
+            
+            // Product title
+            const title = document.createElement('h4');
+            title.className = 'product-title';
+            title.textContent = SecurityUtils.sanitizeHTML(product.name);
+            
+            // Product price
+            const price = document.createElement('p');
+            price.className = 'product-price';
+            price.textContent = formatPrice(product.price);
+            
+            // View details button
+            const button = document.createElement('button');
+            button.className = 'btn btn-primary view-details';
+            button.textContent = 'View Details';
+            
+            // Assemble product card
+            productCard.appendChild(imageContainer);
+            productCard.appendChild(title);
+            productCard.appendChild(price);
+            productCard.appendChild(button);
+            
+            productCol.appendChild(productCard);
             productsRow.appendChild(productCol);
         });
         
@@ -322,8 +446,23 @@ function handleProductClick(e) {
     
     if (!productCard) return;
     
-    const productId = parseInt(productCard.dataset.id);
-    const product = products.find(p => p.id === productId);
+    // Validate product ID
+    const productIdStr = productCard.dataset.id;
+    const idValidation = SecurityUtils.validateNumber(productIdStr, 1, 999999);
+    
+    if (!idValidation.isValid) {
+        console.error('Invalid product ID:', productIdStr);
+        showErrorMessage('Invalid product selected');
+        return;
+    }
+    
+    const product = products.find(p => p.id === idValidation.value);
+    
+    if (!product) {
+        console.error('Product not found:', idValidation.value);
+        showErrorMessage('Product not found');
+        return;
+    }
     
     if (e.target.classList.contains('view-details')) {
         showProductDetails(product);
@@ -332,24 +471,80 @@ function handleProductClick(e) {
 
 // Show product details in modal
 function showProductDetails(product) {
-    productDetailsEl.innerHTML = `
-        <div class="row">
-            <div class="col-md-6">
-                <img src="${product.image}" alt="${product.name}" class="img-fluid rounded">
-            </div>
-            <div class="col-md-6">
-                <h3>${product.name}</h3>
-                <p class="product-price h4 text-primary">${formatPrice(product.price)}</p>
-                <p>${product.description}</p>
-                <button class="btn btn-primary add-to-cart" data-id="${product.id}">Add to Cart</button>
-            </div>
-        </div>
-    `;
+    // Clear previous content
+    productDetailsEl.innerHTML = '';
+    
+    // Create secure modal content
+    const row = document.createElement('div');
+    row.className = 'row';
+    
+    // Image column
+    const imageCol = document.createElement('div');
+    imageCol.className = 'col-md-6';
+    
+    const imageContainer = document.createElement('div');
+    imageContainer.className = 'position-relative';
+    
+    const img = document.createElement('img');
+    img.src = SecurityUtils.sanitizeHTML(product.image || '');
+    img.alt = SecurityUtils.sanitizeHTML(product.name);
+    img.className = 'img-fluid rounded';
+    img.onerror = function() { this.src = 'https://placehold.co/600x400/cccccc/ffffff?text=No+Image'; };
+    imageContainer.appendChild(img);
+    
+    // New badge if applicable
+    if (product.isNew) {
+        const badge = document.createElement('span');
+        badge.className = 'badge bg-success new-badge position-absolute';
+        badge.textContent = 'New';
+        imageContainer.appendChild(badge);
+    }
+    
+    imageCol.appendChild(imageContainer);
+    
+    // Details column
+    const detailsCol = document.createElement('div');
+    detailsCol.className = 'col-md-6';
+    
+    // Product title
+    const title = document.createElement('h3');
+    title.textContent = SecurityUtils.sanitizeHTML(product.name);
+    if (product.isNew) {
+        const badge = document.createElement('span');
+        badge.className = 'badge bg-success ms-2';
+        badge.textContent = 'New';
+        title.appendChild(badge);
+    }
+    
+    // Product price
+    const price = document.createElement('p');
+    price.className = 'product-price h4 text-primary';
+    price.textContent = formatPrice(product.price);
+    
+    // Product description
+    const description = document.createElement('p');
+    description.textContent = SecurityUtils.sanitizeHTML(product.description || '');
+    
+    // Add to cart button
+    const addToCartBtn = document.createElement('button');
+    addToCartBtn.className = 'btn btn-primary add-to-cart';
+    addToCartBtn.textContent = 'Add to Cart';
+    addToCartBtn.setAttribute('data-id', product.id.toString());
+    
+    // Assemble details column
+    detailsCol.appendChild(title);
+    detailsCol.appendChild(price);
+    detailsCol.appendChild(description);
+    detailsCol.appendChild(addToCartBtn);
+    
+    // Assemble row
+    row.appendChild(imageCol);
+    row.appendChild(detailsCol);
+    productDetailsEl.appendChild(row);
     
     bootstrapModal.show();
     
     // Add event listener to Add to Cart button
-    const addToCartBtn = productDetailsEl.querySelector('.add-to-cart');
     addToCartBtn.addEventListener('click', () => {
         addToCart(product);
         bootstrapModal.hide();
@@ -387,30 +582,87 @@ function updateCartUI() {
     cartItemsEl.innerHTML = '';
     
     if (cart.length === 0) {
-        cartItemsEl.innerHTML = '<p>Your cart is empty.</p>';
+        const emptyMessage = document.createElement('p');
+        emptyMessage.textContent = 'Your cart is empty.';
+        cartItemsEl.appendChild(emptyMessage);
         updateCartTotal();
         return;
     }
     
     cart.forEach(item => {
+        // Validate cart item
+        if (!item || typeof item.id !== 'number' || !item.name || typeof item.price !== 'number' || typeof item.quantity !== 'number') {
+            console.warn('Invalid cart item:', item);
+            return;
+        }
+        
         const cartItemEl = document.createElement('div');
         cartItemEl.className = 'cart-item d-flex align-items-center p-3 border-bottom';
         
-        cartItemEl.innerHTML = `
-            <img src="${item.image}" alt="${item.name}" class="cart-item-image rounded me-3" style="width: 80px; height: 80px; object-fit: cover;">
-            <div class="cart-item-details flex-grow-1">
-                <h5 class="cart-item-title mb-1">${item.name}</h5>
-                <p class="cart-item-price mb-0 text-primary">${formatPrice(item.price)}</p>
-            </div>
-            <div class="cart-item-quantity d-flex align-items-center me-3">
-                <button class="btn btn-outline-secondary btn-sm quantity-btn decrease" data-id="${item.id}">-</button>
-                <input type="number" class="form-control form-control-sm mx-2 quantity-input" value="${item.quantity}" min="1" data-id="${item.id}" style="width: 60px;">
-                <button class="btn btn-outline-secondary btn-sm quantity-btn increase" data-id="${item.id}">+</button>
-            </div>
-            <button class="btn btn-outline-danger btn-sm remove-item" data-id="${item.id}">
-                <i class="fas fa-trash"></i>
-            </button>
-        `;
+        // Item image
+        const img = document.createElement('img');
+        img.src = SecurityUtils.sanitizeHTML(item.image || '');
+        img.alt = SecurityUtils.sanitizeHTML(item.name);
+        img.className = 'cart-item-image rounded me-3';
+        img.style.cssText = 'width: 80px; height: 80px; object-fit: cover;';
+        img.onerror = function() { this.src = 'https://placehold.co/600x400/cccccc/ffffff?text=No+Image'; };
+        
+        // Item details
+        const detailsDiv = document.createElement('div');
+        detailsDiv.className = 'cart-item-details flex-grow-1';
+        
+        const title = document.createElement('h5');
+        title.className = 'cart-item-title mb-1';
+        title.textContent = SecurityUtils.sanitizeHTML(item.name);
+        
+        const price = document.createElement('p');
+        price.className = 'cart-item-price mb-0 text-primary';
+        price.textContent = formatPrice(item.price);
+        
+        detailsDiv.appendChild(title);
+        detailsDiv.appendChild(price);
+        
+        // Quantity controls
+        const quantityDiv = document.createElement('div');
+        quantityDiv.className = 'cart-item-quantity d-flex align-items-center me-3';
+        
+        const decreaseBtn = document.createElement('button');
+        decreaseBtn.className = 'btn btn-outline-secondary btn-sm quantity-btn decrease';
+        decreaseBtn.setAttribute('data-id', item.id.toString());
+        decreaseBtn.textContent = '-';
+        
+        const quantityInput = document.createElement('input');
+        quantityInput.type = 'number';
+        quantityInput.className = 'form-control form-control-sm mx-2 quantity-input';
+        quantityInput.value = item.quantity.toString();
+        quantityInput.min = '1';
+        quantityInput.max = '999';
+        quantityInput.setAttribute('data-id', item.id.toString());
+        quantityInput.style.width = '60px';
+        
+        const increaseBtn = document.createElement('button');
+        increaseBtn.className = 'btn btn-outline-secondary btn-sm quantity-btn increase';
+        increaseBtn.setAttribute('data-id', item.id.toString());
+        increaseBtn.textContent = '+';
+        
+        quantityDiv.appendChild(decreaseBtn);
+        quantityDiv.appendChild(quantityInput);
+        quantityDiv.appendChild(increaseBtn);
+        
+        // Remove button
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'btn btn-outline-danger btn-sm remove-item';
+        removeBtn.setAttribute('data-id', item.id.toString());
+        
+        const trashIcon = document.createElement('i');
+        trashIcon.className = 'fas fa-trash';
+        removeBtn.appendChild(trashIcon);
+        
+        // Assemble cart item
+        cartItemEl.appendChild(img);
+        cartItemEl.appendChild(detailsDiv);
+        cartItemEl.appendChild(quantityDiv);
+        cartItemEl.appendChild(removeBtn);
         
         cartItemsEl.appendChild(cartItemEl);
     });
@@ -423,25 +675,46 @@ function updateCartUI() {
     
     decreaseBtns.forEach(btn => {
         btn.addEventListener('click', () => {
-            updateItemQuantity(parseInt(btn.dataset.id), 'decrease');
+            const idValidation = SecurityUtils.validateNumber(btn.dataset.id, 1, 999999);
+            if (idValidation.isValid) {
+                updateItemQuantity(idValidation.value, 'decrease');
+            }
         });
     });
     
     increaseBtns.forEach(btn => {
         btn.addEventListener('click', () => {
-            updateItemQuantity(parseInt(btn.dataset.id), 'increase');
+            const idValidation = SecurityUtils.validateNumber(btn.dataset.id, 1, 999999);
+            if (idValidation.isValid) {
+                updateItemQuantity(idValidation.value, 'increase');
+            }
         });
     });
     
     quantityInputs.forEach(input => {
         input.addEventListener('change', () => {
-            updateItemQuantity(parseInt(input.dataset.id), 'set', parseInt(input.value));
+            const idValidation = SecurityUtils.validateNumber(input.dataset.id, 1, 999999);
+            const quantityValidation = SecurityUtils.validateNumber(input.value, 1, 999);
+            
+            if (idValidation.isValid && quantityValidation.isValid) {
+                updateItemQuantity(idValidation.value, 'set', quantityValidation.value);
+            } else {
+                // Reset to current quantity if invalid
+                const item = cart.find(item => item.id === idValidation.value);
+                if (item) {
+                    input.value = item.quantity;
+                }
+                showErrorMessage('Invalid quantity. Please enter a number between 1 and 999.');
+            }
         });
     });
     
     removeItemBtns.forEach(btn => {
         btn.addEventListener('click', () => {
-            removeItem(parseInt(btn.dataset.id));
+            const idValidation = SecurityUtils.validateNumber(btn.dataset.id, 1, 999999);
+            if (idValidation.isValid) {
+                removeItem(idValidation.value);
+            }
         });
     });
     
@@ -518,77 +791,177 @@ function updateOrderSummary() {
     orderSummaryEl.innerHTML = '';
     
     cart.forEach(item => {
+        // Validate cart item
+        if (!item || typeof item.id !== 'number' || !item.name || typeof item.price !== 'number' || typeof item.quantity !== 'number') {
+            console.warn('Invalid cart item in order summary:', item);
+            return;
+        }
+        
         const orderItemEl = document.createElement('div');
         orderItemEl.className = 'order-item d-flex justify-content-between align-items-center py-2 border-bottom';
         
-        orderItemEl.innerHTML = `
-            <div>
-                <strong>${item.name}</strong> x ${item.quantity}
-            </div>
-            <div class="text-primary fw-bold">
-                ${formatPrice(item.price * item.quantity)}
-            </div>
-        `;
+        // Item details
+        const itemDetails = document.createElement('div');
+        const itemName = document.createElement('strong');
+        itemName.textContent = SecurityUtils.sanitizeHTML(item.name);
+        itemDetails.appendChild(itemName);
+        itemDetails.appendChild(document.createTextNode(` x ${item.quantity}`));
         
+        // Item total
+        const itemTotal = document.createElement('div');
+        itemTotal.className = 'text-primary fw-bold';
+        itemTotal.textContent = formatPrice(item.price * item.quantity);
+        
+        orderItemEl.appendChild(itemDetails);
+        orderItemEl.appendChild(itemTotal);
         orderSummaryEl.appendChild(orderItemEl);
     });
+}
+
+// Show error message
+function showErrorMessage(message) {
+    // Create or update error alert
+    let errorAlert = document.getElementById('error-alert');
+    if (!errorAlert) {
+        errorAlert = document.createElement('div');
+        errorAlert.id = 'error-alert';
+        errorAlert.className = 'alert alert-danger alert-dismissible fade show position-fixed';
+        errorAlert.style.cssText = 'top: 20px; right: 20px; z-index: 9999; max-width: 400px;';
+        document.body.appendChild(errorAlert);
+    }
+    
+    errorAlert.innerHTML = `
+        ${SecurityUtils.sanitizeHTML(message)}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    `;
+    
+    // Auto-hide after 5 seconds
+    setTimeout(() => {
+        if (errorAlert && errorAlert.parentNode) {
+            errorAlert.remove();
+        }
+    }, 5000);
 }
 
 // Handle order submission
 function handleOrderSubmit(e) {
     e.preventDefault();
     
-    const name = document.getElementById('name').value;
-    const address = document.getElementById('address').value;
-    const phone = document.getElementById('phone').value;
-    const notes = document.getElementById('notes').value;
-    
-    if (!name || !address || !phone) {
-        alert('Please fill in all required fields.');
+    // Rate limiting check
+    const clientId = 'order_submission';
+    if (!SecurityUtils.rateLimiter.isAllowed(clientId)) {
+        showErrorMessage('Too many order attempts. Please wait a minute before trying again.');
         return;
     }
     
-    // Create WhatsApp message
-    const message = createWhatsAppMessage(name, address, phone, notes);
+    // Get form values
+    const nameInput = document.getElementById('name');
+    const addressInput = document.getElementById('address');
+    const phoneInput = document.getElementById('phone');
+    const notesInput = document.getElementById('notes');
     
-    // Open WhatsApp with pre-filled message
-    const whatsappUrl = `https://wa.me/62895332782122?text=${encodeURIComponent(message)}`;
-    window.open(whatsappUrl, '_blank');
+    if (!nameInput || !addressInput || !phoneInput || !notesInput) {
+        showErrorMessage('Form elements not found. Please refresh the page.');
+        return;
+    }
     
-    // Show thank you modal
-    thankYouModal.show();
+    // Validate required fields
+    const nameValidation = SecurityUtils.sanitizeAndValidate(nameInput.value, 'name', 50);
+    const addressValidation = SecurityUtils.sanitizeAndValidate(addressInput.value, null, 200);
+    const phoneValidation = SecurityUtils.sanitizeAndValidate(phoneInput.value, 'phone', 20);
+    const notesValidation = SecurityUtils.sanitizeAndValidate(notesInput.value, null, 500);
     
-    // Reset cart and form
-    cart = [];
-    updateCartCount();
-    orderFormEl.reset();
-    showProductCatalog();
+    // Check validation results
+    const validationErrors = [];
+    if (!nameValidation.isValid) validationErrors.push(`Name: ${nameValidation.error}`);
+    if (!addressValidation.isValid) validationErrors.push(`Address: ${addressValidation.error}`);
+    if (!phoneValidation.isValid) validationErrors.push(`Phone: ${phoneValidation.error}`);
+    if (notesInput.value && !notesValidation.isValid) validationErrors.push(`Notes: ${notesValidation.error}`);
+    
+    if (validationErrors.length > 0) {
+        showErrorMessage('Please fix the following errors:\n' + validationErrors.join('\n'));
+        return;
+    }
+    
+    // Validate cart
+    if (cart.length === 0) {
+        showErrorMessage('Your cart is empty. Please add items before placing an order.');
+        return;
+    }
+    
+    // Validate cart items
+    const invalidItems = cart.filter(item => 
+        !item || typeof item.id !== 'number' || !item.name || 
+        typeof item.price !== 'number' || typeof item.quantity !== 'number' ||
+        item.quantity < 1 || item.quantity > 999
+    );
+    
+    if (invalidItems.length > 0) {
+        showErrorMessage('Invalid items found in cart. Please refresh and try again.');
+        return;
+    }
+    
+    try {
+        // Create WhatsApp message
+        const message = createWhatsAppMessage(
+            nameValidation.value, 
+            addressValidation.value, 
+            phoneValidation.value, 
+            notesValidation.value
+        );
+        
+        // Open WhatsApp with pre-filled message
+        const whatsappUrl = `https://wa.me/62895332782122?text=${encodeURIComponent(message)}`;
+        window.open(whatsappUrl, '_blank');
+        
+        // Show thank you modal
+        thankYouModal.show();
+        
+        // Reset cart and form
+        cart = [];
+        updateCartCount();
+        orderFormEl.reset();
+        showProductCatalog();
+        
+    } catch (error) {
+        console.error('Order submission error:', error);
+        showErrorMessage('An error occurred while processing your order. Please try again.');
+    }
 }
 
 // Create WhatsApp message
 function createWhatsAppMessage(name, address, phone, notes) {
-    let message = `*New Order*\n\n`;
-    message += `*Customer Details*\n`;
-    message += `Name: ${name}\n`;
-    message += `Address: ${address}\n`;
-    message += `Phone: ${phone}\n\n`;
-    
-    message += `*Order Items*\n`;
-    
-    cart.forEach(item => {
-        message += `${item.name} x ${item.quantity} - ${formatPrice(item.price * item.quantity)}\n`;
-    });
-    
-    const total = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-    
-    message += `\n*Total: ${formatPrice(total)}*`;
-    
-    // Add notes if provided
-    if (notes && notes.trim()) {
-        message += `\n\n*Order Notes*\n${notes.trim()}`;
+    try {
+        let message = `*New Order*\n\n`;
+        message += `*Customer Details*\n`;
+        message += `Name: ${name}\n`;
+        message += `Address: ${address}\n`;
+        message += `Phone: ${phone}\n\n`;
+        
+        message += `*Order Items*\n`;
+        
+        // Validate and add cart items
+        let total = 0;
+        cart.forEach(item => {
+            if (item && item.name && typeof item.price === 'number' && typeof item.quantity === 'number') {
+                const itemTotal = item.price * item.quantity;
+                message += `${item.name} x ${item.quantity} - ${formatPrice(itemTotal)}\n`;
+                total += itemTotal;
+            }
+        });
+        
+        message += `\n*Total: ${formatPrice(total)}*`;
+        
+        // Add notes if provided
+        if (notes && notes.trim()) {
+            message += `\n\n*Order Notes*\n${notes}`;
+        }
+        
+        return message;
+    } catch (error) {
+        console.error('Error creating WhatsApp message:', error);
+        throw new Error('Failed to create order message');
     }
-    
-    return message;
 }
 
 // Initialize the app when DOM is loaded
