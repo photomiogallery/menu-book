@@ -263,6 +263,7 @@ function formatPrice(price) {
 function init() {
     renderProducts();
     setupEventListeners();
+    setupFormValidation();
     // Initialize Bootstrap modals
     bootstrapModal = new bootstrap.Modal(productModalEl);
     thankYouModal = new bootstrap.Modal(thankYouModalEl);
@@ -639,6 +640,7 @@ function updateCartUI() {
         quantityInput.max = '999';
         quantityInput.setAttribute('data-id', item.id.toString());
         quantityInput.style.width = '60px';
+        quantityInput.setAttribute('title', 'Quantity must be between 1 and 999');
         
         const increaseBtn = document.createElement('button');
         increaseBtn.className = 'btn btn-outline-secondary btn-sm quantity-btn increase';
@@ -697,15 +699,28 @@ function updateCartUI() {
             const quantityValidation = SecurityUtils.validateNumber(input.value, 1, 999);
             
             if (idValidation.isValid && quantityValidation.isValid) {
+                input.classList.remove('is-invalid');
+                input.classList.add('is-valid');
                 updateItemQuantity(idValidation.value, 'set', quantityValidation.value);
             } else {
+                input.classList.remove('is-valid');
+                input.classList.add('is-invalid');
+                
                 // Reset to current quantity if invalid
                 const item = cart.find(item => item.id === idValidation.value);
                 if (item) {
-                    input.value = item.quantity;
+                    setTimeout(() => {
+                        input.value = item.quantity;
+                        input.classList.remove('is-invalid');
+                    }, 1500);
                 }
                 showErrorMessage('Invalid quantity. Please enter a number between 1 and 999.');
             }
+        });
+        
+        // Clear validation state on input
+        input.addEventListener('input', () => {
+            input.classList.remove('is-valid', 'is-invalid');
         });
     });
     
@@ -846,6 +861,7 @@ function showErrorMessage(message) {
 // Handle order submission
 function handleOrderSubmit(e) {
     e.preventDefault();
+    e.stopPropagation();
     
     // Rate limiting check
     const clientId = 'order_submission';
@@ -854,7 +870,8 @@ function handleOrderSubmit(e) {
         return;
     }
     
-    // Get form values
+    // Get form and form elements
+    const form = e.target;
     const nameInput = document.getElementById('name');
     const addressInput = document.getElementById('address');
     const phoneInput = document.getElementById('phone');
@@ -865,28 +882,64 @@ function handleOrderSubmit(e) {
         return;
     }
     
-    // Validate required fields
+    // Reset previous validation states
+    clearFormValidation(form);
+    
+    // Validate required fields with Bootstrap validation
+    let isFormValid = true;
+    const validationResults = {};
+    
+    // Validate name
     const nameValidation = SecurityUtils.sanitizeAndValidate(nameInput.value, 'name', 50);
-    const addressValidation = SecurityUtils.sanitizeAndValidate(addressInput.value, null, 200);
-    const phoneValidation = SecurityUtils.sanitizeAndValidate(phoneInput.value, 'phone', 20);
-    const notesValidation = SecurityUtils.sanitizeAndValidate(notesInput.value, null, 500);
-    
-    // Check validation results
-    const validationErrors = [];
-    if (!nameValidation.isValid) validationErrors.push(`Name: ${nameValidation.error}`);
-    if (!addressValidation.isValid) validationErrors.push(`Address: ${addressValidation.error}`);
-    if (!phoneValidation.isValid) validationErrors.push(`Phone: ${phoneValidation.error}`);
-    if (notesInput.value && !notesValidation.isValid) validationErrors.push(`Notes: ${notesValidation.error}`);
-    
-    if (validationErrors.length > 0) {
-        showErrorMessage('Please fix the following errors:\n' + validationErrors.join('\n'));
-        return;
+    validationResults.name = nameValidation;
+    if (!nameValidation.isValid) {
+        setFieldInvalid(nameInput, nameValidation.error);
+        isFormValid = false;
+    } else {
+        setFieldValid(nameInput);
     }
+    
+    // Validate address
+    const addressValidation = SecurityUtils.sanitizeAndValidate(addressInput.value, null, 200);
+    if (addressValidation.value.length < 10) {
+        addressValidation.isValid = false;
+        addressValidation.error = 'Address must be at least 10 characters long';
+    }
+    validationResults.address = addressValidation;
+    if (!addressValidation.isValid) {
+        setFieldInvalid(addressInput, addressValidation.error);
+        isFormValid = false;
+    } else {
+        setFieldValid(addressInput);
+    }
+    
+    // Validate phone
+    const phoneValidation = SecurityUtils.sanitizeAndValidate(phoneInput.value, 'phone', 20);
+    validationResults.phone = phoneValidation;
+    if (!phoneValidation.isValid) {
+        setFieldInvalid(phoneInput, phoneValidation.error);
+        isFormValid = false;
+    } else {
+        setFieldValid(phoneInput);
+    }
+    
+    // Validate notes (optional)
+    const notesValidation = SecurityUtils.sanitizeAndValidate(notesInput.value || '', null, 500);
+    validationResults.notes = notesValidation;
+    if (notesInput.value && !notesValidation.isValid) {
+        setFieldInvalid(notesInput, notesValidation.error);
+        isFormValid = false;
+    } else if (notesInput.value) {
+        setFieldValid(notesInput);
+    }
+    
+    // Add Bootstrap validation classes
+    form.classList.add('was-validated');
     
     // Validate cart
     if (cart.length === 0) {
         showErrorMessage('Your cart is empty. Please add items before placing an order.');
-        return;
+        isFormValid = false;
     }
     
     // Validate cart items
@@ -898,16 +951,21 @@ function handleOrderSubmit(e) {
     
     if (invalidItems.length > 0) {
         showErrorMessage('Invalid items found in cart. Please refresh and try again.');
+        isFormValid = false;
+    }
+    
+    // If form is not valid, stop here
+    if (!isFormValid) {
         return;
     }
     
     try {
         // Create WhatsApp message
         const message = createWhatsAppMessage(
-            nameValidation.value, 
-            addressValidation.value, 
-            phoneValidation.value, 
-            notesValidation.value
+            validationResults.name.value, 
+            validationResults.address.value, 
+            validationResults.phone.value, 
+            validationResults.notes.value || ''
         );
         
         // Open WhatsApp with pre-filled message
@@ -921,12 +979,107 @@ function handleOrderSubmit(e) {
         cart = [];
         updateCartCount();
         orderFormEl.reset();
+        clearFormValidation(form);
         showProductCatalog();
         
     } catch (error) {
         console.error('Order submission error:', error);
         showErrorMessage('An error occurred while processing your order. Please try again.');
     }
+}
+
+// Set field as invalid with Bootstrap classes
+function setFieldInvalid(field, message) {
+    field.classList.remove('is-valid');
+    field.classList.add('is-invalid');
+    
+    // Update invalid feedback message
+    const feedback = field.parentNode.querySelector('.invalid-feedback');
+    if (feedback) {
+        feedback.textContent = message;
+    }
+}
+
+// Set field as valid with Bootstrap classes
+function setFieldValid(field) {
+    field.classList.remove('is-invalid');
+    field.classList.add('is-valid');
+}
+
+// Clear all form validation states
+function clearFormValidation(form) {
+    form.classList.remove('was-validated');
+    
+    const fields = form.querySelectorAll('.form-control');
+    fields.forEach(field => {
+        field.classList.remove('is-valid', 'is-invalid');
+    });
+}
+
+// Real-time validation for form fields
+function setupFormValidation() {
+    const nameInput = document.getElementById('name');
+    const addressInput = document.getElementById('address');
+    const phoneInput = document.getElementById('phone');
+    const notesInput = document.getElementById('notes');
+    
+    if (nameInput) {
+        nameInput.addEventListener('blur', () => validateField(nameInput, 'name'));
+        nameInput.addEventListener('input', () => clearFieldValidation(nameInput));
+    }
+    
+    if (addressInput) {
+        addressInput.addEventListener('blur', () => validateField(addressInput, 'address'));
+        addressInput.addEventListener('input', () => clearFieldValidation(addressInput));
+    }
+    
+    if (phoneInput) {
+        phoneInput.addEventListener('blur', () => validateField(phoneInput, 'phone'));
+        phoneInput.addEventListener('input', () => clearFieldValidation(phoneInput));
+    }
+    
+    if (notesInput) {
+        notesInput.addEventListener('blur', () => validateField(notesInput, 'notes'));
+        notesInput.addEventListener('input', () => clearFieldValidation(notesInput));
+    }
+}
+
+// Validate individual field
+function validateField(field, type) {
+    let validation;
+    
+    switch (type) {
+        case 'name':
+            validation = SecurityUtils.sanitizeAndValidate(field.value, 'name', 50);
+            break;
+        case 'address':
+            validation = SecurityUtils.sanitizeAndValidate(field.value, null, 200);
+            if (validation.isValid && validation.value.length < 10) {
+                validation.isValid = false;
+                validation.error = 'Address must be at least 10 characters long';
+            }
+            break;
+        case 'phone':
+            validation = SecurityUtils.sanitizeAndValidate(field.value, 'phone', 20);
+            break;
+        case 'notes':
+            if (!field.value) return; // Notes are optional
+            validation = SecurityUtils.sanitizeAndValidate(field.value, null, 500);
+            break;
+        default:
+            return;
+    }
+    
+    if (validation.isValid) {
+        setFieldValid(field);
+    } else {
+        setFieldInvalid(field, validation.error);
+    }
+}
+
+// Clear field validation state
+function clearFieldValidation(field) {
+    field.classList.remove('is-valid', 'is-invalid');
 }
 
 // Create WhatsApp message
